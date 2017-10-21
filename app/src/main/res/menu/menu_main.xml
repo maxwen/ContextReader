@@ -1,10 +1,21 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
       xmlns:app="http://schemas.android.com/apk/res-auto"
       xmlns:tools="http://schemas.android.com/tools"
-      tools:context="com.maxwen.contextreader.MainActivity">
+      tools:context="com.maxwen.contextlistener.MainActivity">
     <item
-        android:id="@+id/action_settings"
-        android:orderInCategory="100"
-        android:title="@string/action_settings"
-        app:showAsAction="never"/>
-</menu>
+        android:id="@+id/action_bt_devices"
+        android:icon="@drawable/ic_bluetooth"
+        android:title="@string/menu_action_bt_devices"
+        app:showAsAction="ifRoom"/>
+
+    <item
+        android:id="@+id/action_wifi_networks"
+        android:icon="@drawable/ic_wifi"
+        android:title="@string/menu_action_wifi_networks"
+        app:showAsAction="ifRoom"/>
+
+    <item
+        android:id="@+id/action_geofences"
+        android:icon="@drawable/ic_location"
+        android:title="@string/menu_action_geofences"
+        app:showAsAction="ifRoom"/></menu>

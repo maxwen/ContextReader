@@ -1,9 +1,12 @@
 package com.maxwen.contextreader;
 
+import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.content.SharedPreferences;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.net.Uri;
@@ -13,6 +16,8 @@ import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CursorAdapter;
@@ -23,7 +28,9 @@ import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.TimeZone;
 
 public class MainActivity extends AppCompatActivity {
@@ -35,6 +42,10 @@ public class MainActivity extends AppCompatActivity {
     private Handler mHandler = new Handler();
     private EventsObserver mEventsObserver;
     private static final String EVENTS = "EVENTS";
+    private static final String SHARED_PREFERENCES_NAME = "triggers.xml";
+    private static final String KEY_FILTERED_APS = "access_points";
+    private static final String KEY_FILTERED_DEVICES = "devices";
+    private static final String KEY_FILTERED_FENCES = "gefoences";
 
     public static final String KEY_ID = "_id";
     public static final String KEY_TIMESTAMP = "timestamp";
@@ -52,6 +63,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String KEY_LOCATION_LAT = "lat";
     public static final String KEY_LOCATION_LONG = "long";
     public static final String KEY_NETWORK_TYPE = "network";
+    public static final String KEY_NETWORK_ACTION = "action";
     public static final String KEY_AP_NAME = "ap";
     public static final String KEY_BT_DEVICE_NAME = "device";
     public static final String KEY_NFC_TAG_ID = "tag";
@@ -61,6 +73,9 @@ public class MainActivity extends AppCompatActivity {
     public static final String KEY_GEOFENCE_ACTION_ENTER = "enter";
     public static final String KEY_GEOFENCE_ACTION_LEAVE = "leave";
     public static final String KEY_GEOFENCE_ACTION_CREATE = "create";
+    public static final String KEY_BT_DEVICE_ACTION = "action";
+    public static final String KEY_BT_DEVICE_ACTION_CONNECT = "connect";
+    public static final String KEY_BT_DEVICE_ACTION_DISCONNECT = "disconnect";
 
     public static final Uri EVENTS_ALL_URI
             = Uri.parse("content://com.maxwen.contextlistener/events/all");
@@ -68,6 +83,14 @@ public class MainActivity extends AppCompatActivity {
             = Uri.parse("content://com.maxwen.contextlistener/events/geofence");
     public static final Uri EVENTS_NETWORK_URI
             = Uri.parse("content://com.maxwen.contextlistener/events/network");
+    public static final Uri EVENTS_BT_URI
+            = Uri.parse("content://com.maxwen.contextlistener/events/bluetooth");
+    public static final Uri FILTERS_BT_URI
+            = Uri.parse("content://com.maxwen.contextlistener/filter/bluetooth");
+    public static final Uri FILTERS_NETWORK_URI
+            = Uri.parse("content://com.maxwen.contextlistener/filter/network");
+    public static final Uri FILTERS_GEOFENCE_URI
+            = Uri.parse("content://com.maxwen.contextlistener/filter/geofence");
 
     final String[] EVENTS_PROJECTION = new String[]{
             KEY_ID,
@@ -122,11 +145,11 @@ public class MainActivity extends AppCompatActivity {
                             JSONObject jData = new JSONObject(data);
                             String geofenceName = jData.getString(KEY_GEOFENCE_NAME);
                             String geofenceAction = jData.getString(KEY_GEOFENCE_ACTION_TYPE);
-                            if (geofenceName.equals(HOME_GEOFENCE)) {
+                            if (isFilteredGeofence(geofenceName)) {
                                 if (geofenceAction.equals(KEY_GEOFENCE_ACTION_ENTER)) {
-                                    createEventNotification("geofence enter " + geofenceName);
+                                    createEventNotification("geofence enter " + geofenceName, 1);
                                 } else if (geofenceAction.equals(KEY_GEOFENCE_ACTION_LEAVE)) {
-                                    createEventNotification("geofence leave" + geofenceName);
+                                    createEventNotification("geofence leave " + geofenceName, 1);
                                 }
                             }
                         }
@@ -139,11 +162,26 @@ public class MainActivity extends AppCompatActivity {
                             String data = c.getString(c.getColumnIndex(KEY_DATA));
                             JSONObject jData = new JSONObject(data);
                             String networkType = jData.getString(KEY_NETWORK_TYPE);
+                            String action = jData.getString(KEY_NETWORK_ACTION);
                             if (networkType.equals("wifi")) {
                                 String apName = jData.getString(KEY_AP_NAME);
-                                if (apName.indexOf(HOME_WIFI) != -1) {
-                                    createEventNotification("network event " + apName);
+                                if (isFilteredNetwork(apName)) {
+                                    createEventNotification(apName + " - " + action, 2);
                                 }
+                            }
+                        }
+                    }
+                } else if (uri.equals(EVENTS_BT_URI)) {
+                    Cursor c = getBTEvents();
+                    if (c.moveToFirst()) {
+                        int type = c.getInt(c.getColumnIndex(KEY_TYPE));
+                        if (type == KEY_TYPE_BT) {
+                            String data = c.getString(c.getColumnIndex(KEY_DATA));
+                            JSONObject jData = new JSONObject(data);
+                            String deviceName = jData.getString(KEY_BT_DEVICE_NAME);
+                            String action = jData.getString(KEY_BT_DEVICE_ACTION);
+                            if (isFilteredBTDevice(deviceName)) {
+                                createEventNotification(deviceName + " - " + action, 3);
                             }
                         }
                     }
@@ -183,6 +221,8 @@ public class MainActivity extends AppCompatActivity {
                 false, mEventsObserver);
         getContentResolver().registerContentObserver(EVENTS_NETWORK_URI,
                 false, mEventsObserver);
+        getContentResolver().registerContentObserver(EVENTS_BT_URI,
+                false, mEventsObserver);
         mAdapter.swapCursor(getEvents());
 
     }
@@ -211,13 +251,211 @@ public class MainActivity extends AppCompatActivity {
                 null, null, orderBy);
     }
 
-    private void createEventNotification(String event) {
+    private Cursor getBTEvents() {
+        String orderBy = KEY_TIMESTAMP + " DESC";
+        return getContentResolver().query(EVENTS_BT_URI, EVENTS_PROJECTION,
+                null, null, orderBy);
+    }
+
+    private Cursor getAvailableBTDevices() {
+        return getContentResolver().query(FILTERS_BT_URI, null, null, null, null);
+    }
+
+    private Cursor getAvailableNetworks() {
+        return getContentResolver().query(FILTERS_NETWORK_URI, null, null, null, null);
+    }
+
+    private Cursor getAvailableGeofences() {
+        return getContentResolver().query(FILTERS_GEOFENCE_URI, null, null, null, null);
+    }
+
+    private void createEventNotification(String event, int id) {
         Notification.Builder builder = new Notification.Builder(this, EVENTS)
                 .setContentTitle(event);
         builder.setSmallIcon(android.R.drawable.ic_dialog_alert);
 
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.cancel(1);
-        nm.notify(1, builder.build());
+        nm.cancel(id);
+        nm.notify(id, builder.build());
+    }
+
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.menu_main, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        int id = item.getItemId();
+
+        if (id == R.id.action_bt_devices) {
+            showBTFilterDialog();
+            return true;
+        }
+
+        if (id == R.id.action_wifi_networks) {
+            showWifiFilterDialog();
+            return true;
+        }
+
+        if (id == R.id.action_geofences) {
+            showGeofenceFilterDialog();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    private void showBTFilterDialog() {
+        final Set<String> filteredDevices = getFilteredBTDevices();
+        final List<String> deviceList = new ArrayList<String>();
+        Cursor cursor = getAvailableBTDevices();
+        boolean[] checkedItems = new boolean[cursor.getCount()];
+        int i = 0;
+        if (cursor.moveToFirst()) {
+            do {
+                String deviceName = cursor.getString(0);
+                deviceList.add(deviceName);
+                checkedItems[i] = filteredDevices.contains(deviceName);
+                i++;
+
+            } while (cursor.moveToNext());
+        }
+        cursor.close();
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Bluetooth Devices")
+                .setMultiChoiceItems(deviceList.toArray(new String[]{}), checkedItems, new DialogInterface.OnMultiChoiceClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int indexSelected, boolean isChecked) {
+                        if (isChecked) {
+                            filteredDevices.add(deviceList.get(indexSelected));
+                        } else {
+                            filteredDevices.remove(deviceList.get(indexSelected));
+                        }
+                    }
+                }).setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int id) {
+                        setFilteredBTDevices(filteredDevices);
+                    }
+                }).create();
+        dialog.show();
+    }
+
+    private void showWifiFilterDialog() {
+        final List<String> networkList = new ArrayList<String>();
+        final Set<String> filteredNetworks = getFilteredNetworks();
+
+        Cursor cursor = getAvailableNetworks();
+        boolean[] checkedItems = new boolean[cursor.getCount()];
+        int i = 0;
+        if (cursor.moveToFirst()) {
+            do {
+                String network = cursor.getString(0);
+                networkList.add(network);
+                checkedItems[i] = filteredNetworks.contains(network);
+                i++;
+
+            } while (cursor.moveToNext());
+        }
+        cursor.close();
+
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Wireless Networks")
+                .setMultiChoiceItems(networkList.toArray(new String[]{}), checkedItems, new DialogInterface.OnMultiChoiceClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int indexSelected, boolean isChecked) {
+                        if (isChecked) {
+                            filteredNetworks.add(networkList.get(indexSelected));
+                        } else {
+                            filteredNetworks.remove(networkList.get(indexSelected));
+                        }
+                    }
+                }).setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int id) {
+                        setFilteredNetworks(filteredNetworks);
+                    }
+                }).create();
+        dialog.show();
+    }
+
+    private void showGeofenceFilterDialog() {
+        final Set<String> filteredFences = getFilteredGeofences();
+        final List<String> fenceList = new ArrayList<>();
+
+        Cursor cursor = getAvailableGeofences();
+        boolean[] checkedItems = new boolean[cursor.getCount()];
+        int i = 0;
+        if (cursor.moveToFirst()) {
+            do {
+                String fence = cursor.getString(0);
+                fenceList.add(fence);
+                checkedItems[i] = filteredFences.contains(fence);
+                i++;
+
+            } while (cursor.moveToNext());
+        }
+        cursor.close();
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Geofences")
+                .setMultiChoiceItems(fenceList.toArray(new String[]{}), checkedItems, new DialogInterface.OnMultiChoiceClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int indexSelected, boolean isChecked) {
+                        if (isChecked) {
+                            filteredFences.add(fenceList.get(indexSelected));
+                        } else {
+                            filteredFences.remove(fenceList.get(indexSelected));
+                        }
+                    }
+                }).setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int id) {
+                        setFilteredGeofences(filteredFences);
+                    }
+                }).create();
+        dialog.show();
+    }
+
+    private SharedPreferences getPrefs() {
+        return getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
+    }
+
+    public Set<String> getFilteredNetworks() {
+        return getPrefs().getStringSet(KEY_FILTERED_APS, new HashSet<String>());
+    }
+
+    private boolean isFilteredNetwork(String network) {
+        return getPrefs().getStringSet(KEY_FILTERED_APS, new HashSet<String>()).contains(network);
+    }
+
+    public void setFilteredNetworks(Set<String> networks) {
+        getPrefs().edit().putStringSet(KEY_FILTERED_APS, networks).commit();
+    }
+
+    private boolean isFilteredBTDevice(String deviceName) {
+        return getPrefs().getStringSet(KEY_FILTERED_DEVICES, new HashSet<String>()).contains(deviceName);
+    }
+
+    public Set<String> getFilteredBTDevices() {
+        return getPrefs().getStringSet(KEY_FILTERED_DEVICES, new HashSet<String>());
+    }
+
+    public void setFilteredBTDevices(Set<String> devices) {
+        getPrefs().edit().putStringSet(KEY_FILTERED_DEVICES, devices).commit();
+    }
+
+    private boolean isFilteredGeofence(String fence) {
+        return getPrefs().getStringSet(KEY_FILTERED_FENCES, new HashSet<String>()).contains(fence);
+    }
+
+    public Set<String> getFilteredGeofences() {
+        return getPrefs().getStringSet(KEY_FILTERED_FENCES, new HashSet<String>());
+    }
+
+    public void setFilteredGeofences(Set<String> fences) {
+        getPrefs().edit().putStringSet(KEY_FILTERED_FENCES, fences).commit();
     }
 }
